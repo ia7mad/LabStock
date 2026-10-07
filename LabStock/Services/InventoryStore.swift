@@ -158,6 +158,90 @@ final class InventoryStore: ObservableObject {
         await refresh()
     }
 
+    // MARK: - AI label scanning
+
+    func item(withID id: UUID) -> StockItem? { items.first(where: { $0.id == id }) }
+
+    func batches(for itemID: UUID) -> [Batch] { batches.filter { $0.itemId == itemID } }
+
+    /// One photo → one AI request (native barcode + on-device text run in parallel as hints).
+    func analyzeLabel(_ image: UIImage) async throws -> ScanAnalysis {
+        guard let prepared = LabelImage.prepare(image) else { throw DeepSeekError.invalidResponse }
+        async let nativeBarcode = BarcodeDetector.detect(in: image)
+        async let ocrText = OCRService.recognizeText(image: image)
+        let hint = try? await ocrText
+        let extraction = try await DeepSeekVisionService.shared.analyze(
+            jpegData: prepared.data,
+            imageHash: prepared.hash,
+            localOCRText: hint
+        )
+        return ScanAnalysis(
+            extraction: extraction,
+            nativeBarcode: await nativeBarcode,
+            localOCRText: hint,
+            imageHash: prepared.hash
+        )
+    }
+
+    /// Existing items that look like this scan, ranked by matching priority.
+    func matches(for analysis: ScanAnalysis) async -> [ScannedItemMatch] {
+        var aliasItemID: UUID?
+        let lookupValues = [analysis.barcode, analysis.extraction.referenceOrCatalog].compactMap { $0 }
+        if !lookupValues.isEmpty {
+            let ids = (try? await service.itemIDs(forAliasValues: lookupValues)) ?? []
+            aliasItemID = ids.first { id in items.contains(where: { $0.id == id }) }
+        }
+        return ItemMatcher.matches(for: analysis.extraction, aliasItemID: aliasItemID, items: items)
+            .compactMap { match in
+                items.first(where: { $0.id == match.itemID }).map { ScannedItemMatch(match: match, item: $0) }
+            }
+    }
+
+    func createItem(with draft: ScanDraft, analysis: ScanAnalysis?) async throws -> StockItem {
+        guard let name = draft.productName.nilIfBlank else { throw LabStockError.missingName }
+        let item = try await service.createItem(
+            name: name,
+            manufacturer: draft.manufacturer,
+            referenceNumber: draft.referenceNumber,
+            groupID: draft.groupID,
+            unitName: draft.unit.nilIfBlank ?? "unit",
+            lowStockThreshold: 1
+        )
+        await learnAliases(itemID: item.id, draft: draft, analysis: analysis)
+        await refresh()
+        return item
+    }
+
+    /// Barcode → barcode alias, REF/catalog/material → ref aliases. Best effort.
+    func learnAliases(itemID: UUID, draft: ScanDraft, analysis: ScanAnalysis?) async {
+        if let barcode = analysis?.barcode {
+            await service.addAliases(itemID: itemID, type: .barcode, values: [barcode])
+        }
+        let references = [
+            draft.referenceNumber,
+            analysis?.extraction.catalogNumber,
+            analysis?.extraction.materialNumber
+        ].compactMap { $0 }
+        if !references.isEmpty {
+            await service.addAliases(itemID: itemID, type: .ref, values: references)
+        }
+    }
+
+    func addStock(itemID: UUID, lot: String?, expiry: Date?, quantity: Int, note: String?) async throws {
+        guard quantity > 0 else { throw LabStockError.invalidQuantity }
+        let batch = try await service.findOrCreateBatch(itemID: itemID, lotNumber: lot, expiryDate: expiry)
+        try await service.applyStock(batchID: batch.id, delta: quantity, type: .add, note: note)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        await refresh()
+    }
+
+    func withdrawStock(batchID: UUID, quantity: Int, note: String?) async throws {
+        guard quantity > 0 else { throw LabStockError.invalidQuantity }
+        try await service.applyStock(batchID: batchID, delta: -quantity, type: .withdraw, note: note)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        await refresh()
+    }
+
     func dashboard(warningDays: Int) -> DashboardSummary {
         var summary = DashboardSummary(totalItems: items.count)
         for snapshot in snapshots {
@@ -189,12 +273,14 @@ final class InventoryStore: ObservableObject {
 }
 
 enum LabStockError: LocalizedError {
-    case invalidQuantity, cameraUnavailable, itemNotRecognized
+    case invalidQuantity, cameraUnavailable, itemNotRecognized, missingName, noBatchSelected
     var errorDescription: String? {
         switch self {
         case .invalidQuantity: "Enter a valid quantity that does not make stock negative."
         case .cameraUnavailable: "Camera scanning is unavailable on this device."
         case .itemNotRecognized: "This code is not linked to an inventory item."
+        case .missingName: "Enter a reagent name before saving."
+        case .noBatchSelected: "Select a lot before continuing."
         }
     }
 }

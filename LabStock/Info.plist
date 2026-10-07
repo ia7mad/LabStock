@@ -30,6 +30,10 @@
     <string>$(SUPABASE_URL)</string>
     <key>SupabasePublishableKey</key>
     <string>$(SUPABASE_PUBLISHABLE_KEY)</string>
+    <key>DeepSeekAPIKey</key>
+    <string>$(DEEPSEEK_API_KEY)</string>
+    <key>DeepSeekModel</key>
+    <string>$(DEEPSEEK_MODEL)</string>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UISupportedInterfaceOrientations</key>

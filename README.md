@@ -18,6 +18,21 @@ configuration system, which feeds `SupabaseURL` / `SupabasePublishableKey` in
 Scheduled stock changes always go through `apply_stock_delta`; the client never
 writes `batches.current_quantity` directly.
 
+## AI label scanning
+
+Scanning is AI-first: one camera photo is sent to the DeepSeek vision model
+(`deepseek-flash`) which returns strict JSON with the reagent name, REF/catalog
+number, LOT, expiry, pack size and storage. On-device Vision barcode decoding and
+Apple OCR run in parallel as hints — a native barcode always wins over the
+model's transcribed text. Recognized barcodes/REF values are stored as
+`scan_aliases` so later scans skip the AI lookup.
+
+`DEEPSEEK_MODEL` lives in `Config.xcconfig`; the real `DEEPSEEK_API_KEY` is kept
+in a git-ignored `Config.local.xcconfig` that `Config.xcconfig` includes, so the
+key is never committed (GitHub push protection also blocks leaked keys). Both
+values reach the app through `Info.plist` (`DeepSeekAPIKey`, `DeepSeekModel`).
+The key is never logged.
+
 ## CI
 
 `.github/workflows/ci.yml` builds the generic iOS device target with code

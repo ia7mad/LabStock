@@ -53,13 +53,18 @@ enum OCRParser {
 
 enum OCRService {
     static func recognize(image: UIImage) async throws -> OCRFields {
+        OCRParser.parse(try await recognizeText(image: image))
+    }
+
+    /// Raw on-device text. Used only as a hint/fallback for the AI analysis.
+    static func recognizeText(image: UIImage) async throws -> String {
         guard let cgImage = image.cgImage else { throw LabStockError.cameraUnavailable }
         return try await withCheckedThrowingContinuation { continuation in
             let request = VNRecognizeTextRequest { request, error in
                 if let error { continuation.resume(throwing: error); return }
                 let text = (request.results as? [VNRecognizedTextObservation])?
                     .compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n") ?? ""
-                continuation.resume(returning: OCRParser.parse(text))
+                continuation.resume(returning: text)
             }
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true

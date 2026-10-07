@@ -9,6 +9,7 @@ struct InventoryCountFlow: View {
     @State private var counts: [InventoryCount] = []
     @State private var working = false
     @State private var showingScanner = false
+    @State private var showingCamera = false
     @State private var showingCompletion = false
     @State private var batchChoices: [InventoryCount] = []
     @State private var choosingBatch = false
@@ -26,6 +27,8 @@ struct InventoryCountFlow: View {
             }
         }
         .sheet(isPresented: $showingScanner) { BarcodeScannerView(continuous: true) { code in handleScan(code) } }
+        .sheet(isPresented: $showingCamera) { LabelCameraView { image in handlePhoto(image) } }
+        .overlay { if working { ProgressView("Analyzing reagent…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         .alert("Stock Count", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(message ?? "") }
@@ -79,6 +82,16 @@ struct InventoryCountFlow: View {
                     else { message = LabStockError.cameraUnavailable.localizedDescription }
                 } label: { Label("Scan", systemImage: "barcode.viewfinder").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
+                Button {
+                    if DataScannerViewController.isSupported {
+                        showingCamera = true
+                    } else if UIImagePickerController.isSourceTypeAvailable(.camera) || UIImagePickerController.isSourceTypeAvailable(.photoLibrary) {
+                        showingCamera = true
+                    } else {
+                        message = LabStockError.cameraUnavailable.localizedDescription
+                    }
+                } label: { Label("Photo", systemImage: "camera.fill").frame(maxWidth: .infinity) }
+                    .buttonStyle(.bordered).controlSize(.large)
                 Button("Review") { showingCompletion = true }.buttonStyle(.bordered).controlSize(.large)
             }.padding().background(.bar)
         }
@@ -146,6 +159,52 @@ struct InventoryCountFlow: View {
     private func increment(_ count: InventoryCount) {
         update(count, to: count.countedQuantity + 1)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    /// Photo → AI identification → count the matching batch (LOT/expiry first, then scope).
+    private func handlePhoto(_ image: UIImage) {
+        working = true
+        Task {
+            do {
+                let analysis = try await store.analyzeLabel(image)
+                let matches = await store.matches(for: analysis)
+                guard let itemID = matches.first?.item.id else {
+                    message = "This item is not in the inventory yet. Add it from the Add Stock tab first."
+                    working = false
+                    return
+                }
+                let candidates = counts.filter { $0.itemId == itemID }
+                guard !candidates.isEmpty else {
+                    message = "This item is outside the current count scope or has no batch."
+                    working = false
+                    return
+                }
+                let matchedBatches = Set(BatchMatcher.matches(
+                    itemID: itemID,
+                    lotNumber: analysis.extraction.lotNumber,
+                    expiryDate: analysis.extraction.expiryDate,
+                    in: store.batches
+                ).map(\.id))
+                let preferred = candidates.filter { batch in
+                    guard let batchID = batch.batchId else { return false }
+                    return matchedBatches.contains(batchID)
+                }
+                if preferred.count == 1, let only = preferred.first {
+                    increment(only)
+                } else if candidates.count == 1, let only = candidates.first {
+                    increment(only)
+                } else {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    batchChoices = preferred.isEmpty ? candidates : preferred + candidates.filter { !preferred.contains($0) }
+                    choosingBatch = true
+                }
+            } catch let error as DeepSeekError {
+                message = error.message
+            } catch {
+                message = error.localizedDescription
+            }
+            working = false
+        }
     }
 
     private func complete() {

@@ -1,2 +1,7 @@
 SUPABASE_URL = https:/$()/esofgqyhpzkupnjerkom.supabase.co
 SUPABASE_PUBLISHABLE_KEY = sb_publishable_22BuSqtveD7pkoayPaw3UA_-c1QH6jC
+DEEPSEEK_MODEL = deepseek-flash
+DEEPSEEK_API_KEY = YOUR_DEEPSEEK_API_KEY
+
+// Local secrets (git-ignored): real DEEPSEEK_API_KEY lives in Config.local.xcconfig
+#include? "Config.local.xcconfig"

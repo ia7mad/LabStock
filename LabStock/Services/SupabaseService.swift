@@ -81,6 +81,54 @@ final class SupabaseService {
         )).execute()
     }
 
+    /// Looks up items by decoded barcode / REF / catalog values.
+    func itemIDs(forAliasValues values: [String]) async throws -> [UUID] {
+        let normalized = Array(Set(values.compactMap { $0.nilIfBlank?.lowercased() }))
+        guard !normalized.isEmpty else { return [] }
+        let aliases: [ScanAlias] = try await client.from("scan_aliases").select()
+            .in("normalized_value", values: normalized).execute().value
+        var seen = Set<UUID>()
+        return aliases.map(\.itemId).filter { seen.insert($0).inserted }
+    }
+
+    /// Best-effort alias learning; duplicates are ignored.
+    func addAliases(itemID: UUID, type: AliasType, values: [String]) async {
+        let userID = try? await client.auth.session.user.id
+        guard let userID else { return }
+        let payloads = Array(Set(values.compactMap { $0.nilIfBlank }))
+            .map { NewAliasPayload(itemId: itemID, type: type, value: $0, createdBy: userID) }
+        guard !payloads.isEmpty else { return }
+        _ = try? await client.from("scan_aliases").insert(payloads).execute()
+    }
+
+    func batches(forItem itemID: UUID) async throws -> [Batch] {
+        try await client.from("batches").select().eq("item_id", value: itemID)
+            .order("expiry_date", ascending: true, nullsFirst: false).execute().value
+    }
+
+    /// Reuses the exact batch (item + LOT + expiry) or creates an empty one.
+    func findOrCreateBatch(itemID: UUID, lotNumber: String?, expiryDate: Date?) async throws -> Batch {
+        let existing = try await batches(forItem: itemID)
+        if let match = BatchMatcher.matches(itemID: itemID, lotNumber: lotNumber, expiryDate: expiryDate, in: existing).first {
+            return match
+        }
+        return try await createBatch(itemID: itemID, lot: lotNumber, expiry: expiryDate)
+    }
+
+    func createItem(name: String, manufacturer: String?, referenceNumber: String?, groupID: UUID?, unitName: String, lowStockThreshold: Int) async throws -> StockItem {
+        let userID = try await client.auth.session.user.id
+        return try await client.from("items").insert(NewItemPayload(
+            groupId: groupID,
+            name: name,
+            manufacturer: manufacturer?.nilIfBlank,
+            referenceNumber: referenceNumber?.nilIfBlank,
+            notes: nil,
+            lowStockThreshold: max(0, lowStockThreshold),
+            unitName: unitName.nilIfBlank ?? "unit",
+            createdBy: userID
+        )).select().single().execute().value
+    }
+
     func fetchBatches() async throws -> [Batch] {
         try await client.from("batches").select().order("expiry_date", ascending: true, nullsFirst: false).execute().value
     }

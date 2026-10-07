@@ -9,17 +9,18 @@ enum ScanMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// AI-first scanning: one photo → DeepSeek label analysis → confirm → save.
 struct ScanView: View {
     @EnvironmentObject private var store: InventoryStore
     @State private var mode: ScanMode = .add
-    @State private var showingScanner = false
-    @State private var scannedCode: String?
-    @State private var recognized: ItemSnapshot?
-    @State private var unknownCode: String?
     @State private var showingCamera = false
-    @State private var ocrFields: OCRFields?
+    @State private var showingScanner = false
+    @State private var showingLibrary = false
+    @State private var review: ScanReviewContext?
     @State private var isWorking = false
     @State private var message: String?
+    @State private var retryImage: UIImage?
+    @State private var pendingBarcode: String?
 
     var body: some View {
         VStack(spacing: 20) {
@@ -28,60 +29,117 @@ struct ScanView: View {
             if mode == .count {
                 InventoryCountFlow()
             } else {
-                Spacer()
-                Image(systemName: mode == .add ? "plus.viewfinder" : "minus.viewfinder")
-                    .font(.system(size: 72)).foregroundStyle(.tint)
-                Text(mode == .add ? "Scan a reagent to add stock" : "Scan a reagent to withdraw stock")
-                    .font(.title3.bold()).multilineTextAlignment(.center)
-                Button {
-                    if DataScannerViewController.isSupported && DataScannerViewController.isAvailable { showingScanner = true }
-                    else { message = LabStockError.cameraUnavailable.localizedDescription }
-                } label: {
-                    Label("Scan Barcode", systemImage: "barcode.viewfinder").font(.title3.bold()).frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).controlSize(.large).padding(.horizontal, 28)
-                Button("Capture Label with OCR") { unknownCode = nil; showingCamera = true }
-                    .buttonStyle(.bordered)
-                Spacer()
+                scanBody
             }
         }
         .navigationTitle("Scan")
-        .sheet(isPresented: $showingScanner) { BarcodeScannerView { code in showingScanner = false; handle(code) } }
-        .sheet(isPresented: $showingCamera) { CameraPicker { image in process(image) } }
-        .sheet(item: $recognized) { snapshot in StockOperationView(snapshot: snapshot, mode: mode) }
-        .sheet(item: $ocrFields) { fields in OCRConfirmationView(initial: fields, barcode: unknownCode) }
-        .overlay { if isWorking { ProgressView("Recognizing…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-        .alert("Scan Result", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
-            if unknownCode != nil { Button("Capture Label") { showingCamera = true } }
+        .sheet(isPresented: $showingCamera) { LabelCameraView { image in analyze(image) } }
+        .sheet(isPresented: $showingScanner) { BarcodeScannerView { code in showingScanner = false; handleBarcode(code) } }
+        .sheet(isPresented: $showingLibrary) { CameraPicker { image in analyze(image) } }
+        .sheet(item: $review) { context in
+            ScanReviewView(mode: mode, analysis: context.analysis, initialBarcode: context.barcode)
+        }
+        .overlay { if isWorking { analyzingOverlay } }
+        .alert("Scan", isPresented: Binding(
+            get: { message != nil },
+            set: { if !$0 { message = nil; retryImage = nil } }
+        )) {
+            if let image = retryImage {
+                Button("Retry") { message = nil; retryImage = nil; analyze(image) }
+            }
+            Button("Manual entry") {
+                message = nil
+                retryImage = nil
+                review = ScanReviewContext(analysis: nil, barcode: pendingBarcode)
+            }
             Button("Cancel", role: .cancel) {}
-        } message: { Text(message ?? "") }
+        } message: {
+            Text(message ?? "")
+        }
     }
 
-    private func handle(_ code: String) {
-        scannedCode = code; isWorking = true
+    private var scanBody: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: mode == .add ? "camera.viewfinder" : "minus.circle")
+                .font(.system(size: 64)).foregroundStyle(.tint)
+            Text(mode == .add ? "Photograph a reagent label to add stock" : "Photograph a reagent label to withdraw stock")
+                .font(.title3.bold()).multilineTextAlignment(.center).padding(.horizontal)
+            Text("One photo is enough — REF, LOT and expiry are read automatically.")
+                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal)
+            Button {
+                showingCamera = true
+            } label: {
+                Label("Photograph Label", systemImage: "camera.fill")
+                    .font(.title3.bold()).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large).padding(.horizontal, 28)
+
+            HStack(spacing: 12) {
+                Button { showingScanner = true } label: { Label("Scan barcode", systemImage: "barcode.viewfinder") }
+                    .buttonStyle(.bordered)
+                Button { showingLibrary = true } label: { Label("From Photos", systemImage: "photo") }
+                    .buttonStyle(.bordered)
+            }
+            Button("Enter manually") { review = ScanReviewContext(analysis: nil, barcode: nil) }
+                .font(.footnote)
+            Spacer()
+        }
+    }
+
+    private var analyzingOverlay: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Analyzing reagent…").font(.headline)
+            Text("Reading REF, LOT and expiry from the label")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .shadow(radius: 12)
+    }
+
+    private func analyze(_ image: UIImage) {
+        isWorking = true
+        message = nil
+        pendingBarcode = nil
         Task {
             do {
-                let match = try await store.recognize(code)
-                if let snapshot = match {
-                    recognized = snapshot
-                } else {
-                    unknownCode = code
-                    message = "Unknown barcode. Capture the label so the extracted fields can be confirmed."
-                }
-            } catch { message = error.localizedDescription }
+                let analysis = try await store.analyzeLabel(image)
+                // Let the camera sheet finish dismissing before presenting the review.
+                try? await Task.sleep(for: .milliseconds(300))
+                review = ScanReviewContext(analysis: analysis, barcode: analysis.barcode)
+            } catch let error as DeepSeekError {
+                retryImage = error.canRetry ? image : nil
+                message = error.message
+            } catch {
+                retryImage = image
+                message = error.localizedDescription
+            }
             isWorking = false
         }
     }
 
-    private func process(_ image: UIImage) {
-        showingCamera = false; isWorking = true
-        Task {
-            do { ocrFields = try await OCRService.recognize(image: image) }
-            catch { message = error.localizedDescription }
-            isWorking = false
-        }
+    /// Known barcode: reuse the existing item, the review screen still edits LOT/expiry.
+    private func handleBarcode(_ code: String) {
+        pendingBarcode = code
+        let analysis = ScanAnalysis(
+            extraction: ReagentExtraction(),
+            nativeBarcode: code,
+            localOCRText: nil,
+            imageHash: "barcode:\(code)"
+        )
+        review = ScanReviewContext(analysis: analysis, barcode: code)
     }
 }
 
+struct ScanReviewContext: Identifiable {
+    let id = UUID()
+    let analysis: ScanAnalysis?
+    let barcode: String?
+}
+
+/// Manual/FEFO batch operation kept for the item detail screen.
 struct StockOperationView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: InventoryStore
@@ -166,72 +224,16 @@ struct StockOperationView: View {
     }
 }
 
-private struct OCRConfirmationView: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var store: InventoryStore
-    let barcode: String?
-    @State private var fields: OCRFields
-    @State private var groupID: UUID?
-    @State private var quantity = 1
-    @State private var hasExpiry: Bool
-    @State private var saving = false
-    @State private var error: String?
-
-    init(initial: OCRFields, barcode: String?) {
-        self.barcode = barcode
-        _fields = State(initialValue: initial)
-        _hasExpiry = State(initialValue: initial.expiryDate != nil)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Confirm Extracted Fields") {
-                    TextField("Reagent name", text: $fields.name)
-                    TextField("Manufacturer", text: $fields.manufacturer)
-                    TextField("REF", text: $fields.referenceNumber).textInputAutocapitalization(.characters)
-                    TextField("LOT", text: $fields.lotNumber).textInputAutocapitalization(.characters)
-                    Toggle("Has expiry date", isOn: $hasExpiry)
-                    if hasExpiry {
-                        DatePicker("Expiry", selection: Binding(get: { fields.expiryDate ?? .now }, set: { fields.expiryDate = $0 }), displayedComponents: .date)
-                    }
-                }
-                Section("Inventory") {
-                    Picker("Group", selection: $groupID) {
-                        Text("None").tag(Optional<UUID>.none)
-                        ForEach(store.groups) { Text($0.name).tag(Optional($0.id)) }
-                    }
-                    Stepper("Quantity: \(quantity)", value: $quantity, in: 1...9999)
-                }
-                Section { Text("Nothing is saved until you tap Save. The barcode and REF become aliases for faster future scans.").font(.footnote).foregroundStyle(.secondary) }
-                if let error { Section { Text(error).foregroundStyle(.red) } }
-            }
-            .navigationTitle("Confirm Label")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Save") { save() }.disabled(fields.name.nilIfBlank == nil || saving) }
-            }
-            .onChange(of: hasExpiry) { if !$0 { fields.expiryDate = nil } }
-        }
-    }
-
-    private func save() {
-        saving = true; error = nil
-        Task {
-            do { try await store.createScanned(fields: fields, groupID: groupID, barcode: barcode, quantity: quantity); dismiss() }
-            catch { self.error = error.localizedDescription }
-            saving = false
-        }
-    }
-}
-
 struct BarcodeScannerView: UIViewControllerRepresentable {
     var continuous = false
     let onCode: (String) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(continuous: continuous, onCode: onCode) }
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let types: Set<DataScannerViewController.RecognizedDataType> = [
-            .barcode(symbologies: [.ean13, .ean8, .upce, .code128, .code39, .qr, .dataMatrix])
+            .barcode(symbologies: [
+                .ean13, .ean8, .upce, .code128, .code39, .code93,
+                .pdf417, .qr, .dataMatrix, .aztec, .codabar
+            ])
         ]
         let controller = DataScannerViewController(recognizedDataTypes: types, qualityLevel: .balanced, recognizesMultipleItems: false, isHighFrameRateTrackingEnabled: false, isHighlightingEnabled: true)
         controller.delegate = context.coordinator
@@ -279,5 +281,3 @@ struct CameraPicker: UIViewControllerRepresentable {
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { picker.dismiss(animated: true) }
     }
 }
-
-extension OCRFields: Identifiable { var id: String { "\(name)|\(referenceNumber)|\(lotNumber)" } }

@@ -3,10 +3,10 @@ import UIKit
 import Vision
 
 enum OCRParser {
-    private static let refPattern = #"(?i)\b(?:REF|CAT(?:ALOG)?(?:\s*NO)?)[\s:#-]*([A-Z0-9][A-Z0-9._/-]{2,})"#
-    private static let lotPattern = #"(?i)\b(?:LOT|BATCH)[\s:#-]*([A-Z0-9][A-Z0-9._/-]{1,})"#
-    private static let expiryPattern = #"(?i)\b(?:EXP(?:IRY|IRES)?|USE\s*BY|BEST\s*BEFORE)[\s:#-]*(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})"#
-    private static let makerPattern = #"(?im)\b(?:MANUFACTURER|MFR|MADE\s+BY)[\s:#-]*(.+)$"#
+    private static let refPattern = #"(?i)\b(?:REF|CAT(?:ALOG)?(?:\s*NO)?)(?=[\s:#-]|\d)[\s:#-]*([A-Z0-9][A-Z0-9._/-]{2,})"#
+    private static let lotPattern = #"(?i)\b(?:LOT|BATCH)(?=[\s:#-]|\d)[\s:#-]*([A-Z0-9][A-Z0-9._/-]{1,})"#
+    private static let expiryPattern = #"(?i)\b(?:EXP(?:IRY|IRES)?|USE\s*BY|BEST\s*BEFORE)(?=[\s:#-]|\d)[\s:#-]*(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})"#
+    private static let makerPattern = #"(?im)\b(?:MANUFACTURER|MFR|MADE\s+BY)\b[\s:#-]*(.+)$"#
 
     static func parse(_ text: String) -> OCRFields {
         let lines = text.components(separatedBy: .newlines)

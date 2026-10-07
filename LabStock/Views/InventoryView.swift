@@ -173,8 +173,8 @@ struct AddItemView: View {
                                     groupID: groupID,
                                     manufacturer: manufacturer,
                                     referenceNumber: reference,
-                                    unitName: unitName,
-                                    lowStockThreshold: lowStockThreshold
+                                    lowStockThreshold: lowStockThreshold,
+                                    unitName: unitName
                                 )
                                 dismiss()
                             } catch { store.errorMessage = error.localizedDescription }

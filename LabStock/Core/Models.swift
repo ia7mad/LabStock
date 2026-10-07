@@ -167,22 +167,21 @@ struct ReagentExtraction: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         func text(_ key: CodingKeys) -> String? {
-            if let decoded = try? container.decodeIfPresent(String.self, forKey: key) {
-                guard let value = decoded else { return nil }
+            if let value = try? container.decode(String.self, forKey: key) {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 let lowered = trimmed.lowercased()
                 guard !trimmed.isEmpty, lowered != "null", lowered != "n/a", lowered != "unknown" else { return nil }
                 return trimmed
             }
-            if let decoded = try? container.decodeIfPresent(Double.self, forKey: key), let value = decoded {
+            if let value = try? container.decode(Double.self, forKey: key) {
                 return value == value.rounded() ? String(Int(value)) : String(value)
             }
             return nil
         }
 
         func number(_ key: CodingKeys) -> Double? {
-            if let decoded = try? container.decodeIfPresent(Double.self, forKey: key), let value = decoded { return value }
-            if let decoded = try? container.decodeIfPresent(String.self, forKey: key), let value = decoded {
+            if let value = try? container.decode(Double.self, forKey: key) { return value }
+            if let value = try? container.decode(String.self, forKey: key) {
                 return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
             }
             return nil
@@ -207,7 +206,7 @@ struct ReagentExtraction: Codable, Equatable {
         reagentType = text(.reagentType)
         rawLabelText = text(.rawLabelText)
         confidence = number(.confidence)
-        fieldConfidence = try? container.decodeIfPresent([String: Double].self, forKey: .fieldConfidence)
+        fieldConfidence = try? container.decode([String: Double].self, forKey: .fieldConfidence)
     }
 
     /// True when the model returned nothing usable for inventory.

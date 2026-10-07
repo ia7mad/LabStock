@@ -9,7 +9,9 @@ enum BarcodeDetector {
         guard let cgImage = image.cgImage else { return nil }
         return await withCheckedContinuation { continuation in
             let request = VNDetectBarcodesRequest { request, _ in
-                let observations = (request.results ?? []).sorted { $0.confidence > $1.confidence }
+                let observations = (request.results ?? [])
+                    .compactMap { $0 as? VNBarcodeObservation }
+                    .sorted { $0.confidence > $1.confidence }
                 let payload = observations
                     .compactMap { $0.payloadStringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .first { !$0.isEmpty }

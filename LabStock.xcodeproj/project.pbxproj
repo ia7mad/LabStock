@@ -142,6 +142,7 @@
 
 /* Begin XCBuildConfiguration section */
 		AA00000000000000000000E0 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA0000000000000000000052 /* Config.xcconfig */; buildSettings = {
+			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 			CODE_SIGN_STYLE = Automatic;
 			CURRENT_PROJECT_VERSION = 1;
@@ -159,6 +160,7 @@
 			TARGETED_DEVICE_FAMILY = 1;
 		}; name = Debug; };
 		AA00000000000000000000E1 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA0000000000000000000052 /* Config.xcconfig */; buildSettings = {
+			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 			CODE_SIGN_STYLE = Automatic;
 			CURRENT_PROJECT_VERSION = 1;

@@ -40,6 +40,19 @@ jobs:
           echo "Using simulator UDID: $UDID"
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
+      - name: Configure DeepSeek key
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+            echo "::error title=Missing repository secret::DEEPSEEK_API_KEY is not set for this repository"
+            exit 1
+          fi
+          umask 077
+          printf 'DEEPSEEK_API_KEY = %s\n' "$DEEPSEEK_API_KEY" > Config.local.xcconfig
+          echo "Local xcconfig written for this build (value not printed)."
+
       - name: Build for generic iOS device (no signing)
         run: |
           set -o pipefail
@@ -59,6 +72,12 @@ jobs:
           set -euo pipefail
           APP="build/dd-device/Build/Products/Release-iphoneos/LabStock.app"
           test -d "$APP"
+          test -f "$APP/Assets.car" || { echo "::error::Assets.car is missing from the app bundle"; exit 1; }
+          if grep -aq "AppIcon" "$APP/Assets.car"; then
+            echo "AppIcon found in Assets.car"
+          else
+            echo "::warning::AppIcon was not found in Assets.car"
+          fi
           rm -rf build/ipa
           mkdir -p build/ipa/Payload
           cp -R "$APP" build/ipa/Payload/

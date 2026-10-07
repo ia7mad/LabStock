@@ -129,6 +129,31 @@ final class SupabaseService {
         )).select().single().execute().value
     }
 
+    /// Edits an existing item in place. Never creates a new row.
+    func updateItem(id: UUID, name: String, manufacturer: String?, referenceNumber: String?, groupID: UUID?, unitName: String, lowStockThreshold: Int, notes: String?) async throws {
+        try await client.from("items").update(UpdateItemPayload(
+            name: name,
+            manufacturer: manufacturer?.nilIfBlank,
+            referenceNumber: referenceNumber?.nilIfBlank,
+            groupId: groupID,
+            unitName: unitName.nilIfBlank ?? "unit",
+            lowStockThreshold: max(0, lowStockThreshold),
+            notes: notes?.nilIfBlank
+        )).eq("id", value: id).execute()
+    }
+
+    func deleteItem(id: UUID) async throws {
+        try await client.from("items").delete().eq("id", value: id).execute()
+    }
+
+    /// Only LOT and expiry are editable; quantities always go through apply_stock_delta.
+    func updateBatch(id: UUID, lotNumber: String?, expiryDate: Date?) async throws {
+        try await client.from("batches").update(UpdateBatchPayload(
+            lotNumber: lotNumber?.nilIfBlank,
+            expiryDate: expiryDate.map { DateFormatter.sqlDate.string(from: $0) }
+        )).eq("id", value: id).execute()
+    }
+
     func fetchBatches() async throws -> [Batch] {
         try await client.from("batches").select().order("expiry_date", ascending: true, nullsFirst: false).execute().value
     }

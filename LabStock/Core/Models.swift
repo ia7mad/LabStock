@@ -116,7 +116,7 @@ struct OCRFields: Equatable {
 
 /// Structured label extraction returned by the DeepSeek vision model.
 /// Every field is optional: the model returns `null` instead of guessing.
-struct ReagentExtraction: Codable, Equatable {
+struct ReagentExtraction: Decodable, Equatable {
     var productName: String?
     var manufacturer: String?
     var referenceNumber: String?
@@ -148,6 +148,7 @@ struct ReagentExtraction: Codable, Equatable {
         case expiryDate = "expiry_date"
         case manufactureDate = "manufacture_date"
         case volume
+        case volumeOrPack = "volume_or_pack"
         case packSize = "pack_size"
         case unit
         case storageTemperature = "storage_temperature"
@@ -195,7 +196,7 @@ struct ReagentExtraction: Codable, Equatable {
         lotNumber = text(.lotNumber)
         expiryDate = LabelDateParser.parse(text(.expiryDate))
         manufactureDate = LabelDateParser.parse(text(.manufactureDate))
-        volume = text(.volume)
+        volume = text(.volume) ?? text(.volumeOrPack)
         packSize = text(.packSize)
         unit = text(.unit)
         storageTemperature = text(.storageTemperature)
@@ -271,9 +272,26 @@ struct ScanAnalysis: Equatable {
     var nativeBarcode: String?
     var localOCRText: String?
     var imageHash: String
+    /// True when a known barcode + single batch answered the scan without calling the model.
+    var usedLocalFastPath = false
 
     /// Native decoders always win over the model's transcribed barcode text.
     var barcode: String? { nativeBarcode?.nilIfBlank ?? extraction.barcodeText?.nilIfBlank }
+}
+
+/// Progressive scan stages shown while a photo is processed.
+enum ScanStage: String, Equatable {
+    case preparing
+    case readingLabel
+    case checkingInventory
+
+    var message: String {
+        switch self {
+        case .preparing: "Preparing photo…"
+        case .readingLabel: "Reading label…"
+        case .checkingInventory: "Checking inventory…"
+        }
+    }
 }
 
 /// A likely existing inventory item found before creating anything new.
@@ -365,6 +383,19 @@ struct NewBatchPayload: Encodable {
     let createdBy: UUID
 }
 struct NewAliasPayload: Encodable { let itemId: UUID; let type: AliasType; let value: String; let createdBy: UUID }
+struct UpdateItemPayload: Encodable {
+    let name: String
+    let manufacturer: String?
+    let referenceNumber: String?
+    let groupId: UUID?
+    let unitName: String
+    let lowStockThreshold: Int
+    let notes: String?
+}
+struct UpdateBatchPayload: Encodable {
+    let lotNumber: String?
+    let expiryDate: String?
+}
 struct NewSessionPayload: Encodable {
     let groupId: UUID?
     let status: InventorySessionStatus = .active

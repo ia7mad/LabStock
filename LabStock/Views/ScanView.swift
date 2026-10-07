@@ -18,6 +18,7 @@ struct ScanView: View {
     @State private var showingLibrary = false
     @State private var review: ScanReviewContext?
     @State private var isWorking = false
+    @State private var stage: ScanStage?
     @State private var message: String?
     @State private var retryImage: UIImage?
     @State private var pendingBarcode: String?
@@ -61,8 +62,12 @@ struct ScanView: View {
     private var scanBody: some View {
         VStack(spacing: 16) {
             Spacer()
-            Image(systemName: mode == .add ? "camera.viewfinder" : "minus.circle")
-                .font(.system(size: 64)).foregroundStyle(.tint)
+            ZStack {
+                Circle().fill(LabTheme.cyan.opacity(0.14)).frame(width: 132, height: 132)
+                Image(systemName: mode == .add ? "viewfinder" : "minus.circle")
+                    .font(.system(size: 54, weight: .semibold))
+                    .foregroundStyle(LabTheme.cyan)
+            }
             Text(mode == .add ? "Photograph a reagent label to add stock" : "Photograph a reagent label to withdraw stock")
                 .font(.title3.bold()).multilineTextAlignment(.center).padding(.horizontal)
             Text("One photo is enough — REF, LOT and expiry are read automatically.")
@@ -73,7 +78,7 @@ struct ScanView: View {
                 Label("Photograph Label", systemImage: "camera.fill")
                     .font(.title3.bold()).frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent).controlSize(.large).padding(.horizontal, 28)
+            .buttonStyle(.borderedProminent).controlSize(.large).tint(LabTheme.cyan).padding(.horizontal, 28)
 
             HStack(spacing: 12) {
                 Button { showingScanner = true } label: { Label("Scan barcode", systemImage: "barcode.viewfinder") }
@@ -88,26 +93,31 @@ struct ScanView: View {
     }
 
     private var analyzingOverlay: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("Analyzing reagent…").font(.headline)
-            Text("Reading REF, LOT and expiry from the label")
+        VStack(spacing: 14) {
+            ProgressView().controlSize(.large)
+            Text((stage ?? .readingLabel).message)
+                .font(.headline)
+                .contentTransition(.opacity)
+            Text("One photo — nothing to type.")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        .padding(24)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(26)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(radius: 12)
     }
 
     private func analyze(_ image: UIImage) {
         isWorking = true
+        stage = .preparing
         message = nil
         pendingBarcode = nil
         Task {
             do {
-                let analysis = try await store.analyzeLabel(image)
+                let analysis = try await store.analyzeLabel(image, allowLocalFastPath: mode == .withdraw) { newStage in
+                    stage = newStage
+                }
                 // Let the camera sheet finish dismissing before presenting the review.
-                try? await Task.sleep(for: .milliseconds(300))
+                try? await Task.sleep(for: .milliseconds(250))
                 review = ScanReviewContext(analysis: analysis, barcode: analysis.barcode)
             } catch let error as DeepSeekError {
                 retryImage = error.canRetry ? image : nil
@@ -116,6 +126,7 @@ struct ScanView: View {
                 retryImage = image
                 message = error.localizedDescription
             }
+            stage = nil
             isWorking = false
         }
     }

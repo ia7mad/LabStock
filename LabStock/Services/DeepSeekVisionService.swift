@@ -28,7 +28,7 @@ actor DeepSeekVisionService {
     func clearCache() { cache.removeAll() }
 
     /// Sends one captured label image to DeepSeek and returns structured fields.
-    func analyze(jpegData: Data, imageHash: String, localOCRText: String? = nil) async throws -> ReagentExtraction {
+    func analyze(jpegData: Data, imageHash: String) async throws -> ReagentExtraction {
         if let cached = cache[imageHash] { return cached }
         guard let apiKey = AppConfig.deepSeekAPIKey else { throw DeepSeekError.notConfigured }
 
@@ -42,10 +42,10 @@ actor DeepSeekVisionService {
                 messages: [
                     .init(role: "system", content: [.init(type: "text", text: DeepSeekPrompt.system)]),
                     .init(role: "user", content: [
-                        .init(type: "text", text: DeepSeekPrompt.user(localOCRText: localOCRText)),
+                        .init(type: "text", text: DeepSeekPrompt.user),
                         .init(type: "image_url", image_url: .init(
                             url: "data:image/jpeg;base64,\(jpegData.base64EncodedString())",
-                            detail: "original"
+                            detail: AppConfig.deepSeekImageDetail
                         ))
                     ])
                 ],
@@ -53,6 +53,10 @@ actor DeepSeekVisionService {
                 response_format: .init(type: "json_object")
             )
         )
+
+        #if DEBUG
+        let startedAt = Date()
+        #endif
 
         let data: Data
         let response: URLResponse
@@ -66,6 +70,11 @@ actor DeepSeekVisionService {
 
         guard let http = response as? HTTPURLResponse else { throw DeepSeekError.invalidResponse }
         if let error = DeepSeekError.from(statusCode: http.statusCode) { throw error }
+
+        #if DEBUG
+        // Debug-only timing. Never logs the key or the image payload.
+        print("DeepSeek label request finished in \(String(format: "%.2f", Date().timeIntervalSince(startedAt)))s")
+        #endif
 
         guard let content = ChatResponse.assistantContent(from: data) else { throw DeepSeekError.invalidResponse }
         guard let extraction = DeepSeekExtractionDecoder.decode(content) else { throw DeepSeekError.invalidResponse }
@@ -138,68 +147,34 @@ enum DeepSeekExtractionDecoder {
 
 enum DeepSeekPrompt {
     static let system = """
-    You are a strict laboratory reagent label extractor for inventory management. \
-    Return only structured JSON matching the requested schema, with no commentary.
+    You are a fast laboratory reagent label reader. \
+    Read the image and extract only factual inventory fields. \
+    Return null when unclear. \
+    Never guess REF, LOT, or expiry. \
+    Return JSON only.
     """
 
-    static func user(localOCRText: String?) -> String {
-        var prompt = """
-        You are analyzing a laboratory reagent or consumable label for inventory management.
-        Read the entire image carefully including small printed text, side panels and secondary labels.
-
-        Extract factual information only. Never guess identifiers or dates. If a value is not clearly visible, return null.
-
-        Pay special attention to: REF / catalog number, LOT, expiry date, manufacturer, product/reagent name, \
-        volume/pack size, storage temperature, GTIN/barcode text.
-
-        Laboratory labels may come from Beckman Coulter, Roche, Siemens, Abbott, Bio-Rad or other manufacturers, \
-        and their layouts differ. Do not rely on one manufacturer layout.
-
-        Rules:
-        - Return null instead of guessing.
-        - Never invent LOT, REF, expiry, GTIN or barcode numbers.
-        - Normalize expiry_date to YYYY-MM-DD when certain.
-        - Keep manufacturer names clean.
-        - Preserve the exact characters of LOT and REF.
-        - Distinguish REF / catalog number from LOT.
-        - Read small printed text carefully.
-        - Ignore hazard statements unless they carry storage information.
-        - If multiple products are visible, choose the main foreground reagent and mention the ambiguity in raw_label_text.
-
-        Return only JSON using exactly these keys:
-        {
-          "product_name": null,
-          "manufacturer": null,
-          "reference_number": null,
-          "catalog_number": null,
-          "material_number": null,
-          "lot_number": null,
-          "expiry_date": null,
-          "manufacture_date": null,
-          "volume": null,
-          "pack_size": null,
-          "unit": null,
-          "storage_temperature": null,
-          "barcode_text": null,
-          "gtin": null,
-          "serial_number": null,
-          "analyzer_or_platform": null,
-          "reagent_type": null,
-          "raw_label_text": null,
-          "confidence": 0.0,
-          "field_confidence": {
-            "product_name": 0.0,
-            "reference_number": 0.0,
-            "lot_number": 0.0,
-            "expiry_date": 0.0
-          }
-        }
-        """
-        if let localOCRText = localOCRText?.nilIfBlank {
-            prompt += "\n\nOn-device OCR text from the same photo (may contain errors, use as a hint only):\n\(localOCRText.prefix(2000))"
-        }
-        return prompt
+    /// Compact fast-mode request: only the fields an inventory scan needs.
+    static let user = """
+    Read this reagent label. Return JSON only, no prose, using exactly these keys:
+    {
+      "product_name": null,
+      "manufacturer": null,
+      "reference_number": null,
+      "lot_number": null,
+      "expiry_date": null,
+      "volume_or_pack": null,
+      "confidence": 0.0,
+      "field_confidence": {
+        "product_name": 0.0,
+        "reference_number": 0.0,
+        "lot_number": 0.0,
+        "expiry_date": 0.0
+      }
     }
+    Rules: read small printed text; REF/catalog number is not the LOT; normalize expiry_date to YYYY-MM-DD when certain; \
+    never invent REF, LOT or expiry; return null when a value is unclear.
+    """
 }
 
 enum DeepSeekError: Error, Equatable {
@@ -253,8 +228,9 @@ enum DeepSeekError: Error, Equatable {
 
 /// Resizes, compresses and hashes a captured label image before upload.
 enum LabelImage {
-    static let maxDimension: CGFloat = 2000
-    static let jpegQuality: CGFloat = 0.85
+    /// Fast-mode upload size: enough detail for small print, small enough to send quickly.
+    static let maxDimension: CGFloat = 1600
+    static let jpegQuality: CGFloat = 0.78
 
     static func prepare(_ image: UIImage, maxDimension: CGFloat = maxDimension, quality: CGFloat = jpegQuality) -> (data: Data, hash: String)? {
         let resized = resized(image, maxDimension: maxDimension)

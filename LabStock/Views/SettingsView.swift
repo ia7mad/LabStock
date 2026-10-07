@@ -5,6 +5,7 @@ struct SettingsView: View {
     @AppStorage("expiryWarningDays") private var warningDays = 30
     @AppStorage("notificationsEnabled") private var notificationsEnabled = false
     @State private var showingGroups = false
+    @State private var showingExport = false
 
     var body: some View {
         Form {
@@ -14,6 +15,7 @@ struct SettingsView: View {
             }
             Section("Inventory") {
                 Button("Manage Groups") { showingGroups = true }
+                Button("Export Data") { showingExport = true }
                 Stepper("Expiry warning: \(warningDays) days", value: $warningDays, in: 1...365)
             }
             Section("Notifications") {
@@ -24,6 +26,7 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .sheet(isPresented: $showingGroups) { NavigationStack { GroupManagerView() } }
+        .sheet(isPresented: $showingExport) { ExportView() }
         .onChange(of: notificationsEnabled) { enabled in
             Task { @MainActor in
                 if enabled {

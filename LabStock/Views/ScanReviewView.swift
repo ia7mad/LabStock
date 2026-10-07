@@ -45,11 +45,41 @@ struct ScanReviewView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(draft.productName.nilIfBlank ?? (creatingNew ? "New reagent" : "Reagent"))
+                            .font(.title3.bold())
+                        if let maker = draft.manufacturer.nilIfBlank {
+                            Text(maker).font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        if let ref = draft.referenceNumber.nilIfBlank {
+                            Text("REF \(ref)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
                 if !matches.isEmpty { matchSection }
                 fieldsSection
                 if mode == .withdraw { batchSection }
                 quantitySection
                 if let errorMessage { Section { Text(errorMessage).foregroundStyle(.red) } }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    save()
+                } label: {
+                    Text(primaryTitle)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(mode == .withdraw ? .red : LabTheme.cyan)
+                .disabled(!canSave || isWorking)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+                .background(.bar)
             }
             .navigationTitle(navigationTitle)
             .toolbar {

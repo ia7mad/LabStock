@@ -21,6 +21,8 @@ final class InventoryStore: ObservableObject {
 
     var currentProfile: Profile? { profiles.first(where: { $0.id == userID }) }
 
+    var totalQuantity: Int { batches.reduce(0) { $0 + $1.currentQuantity } }
+
     func displayName(for userID: UUID) -> String {
         if let name = profiles.first(where: { $0.id == userID })?.displayName?.nilIfBlank { return name }
         return userID == self.userID ? "Me" : String(userID.uuidString.prefix(8))
@@ -164,23 +166,40 @@ final class InventoryStore: ObservableObject {
 
     func batches(for itemID: UUID) -> [Batch] { batches.filter { $0.itemId == itemID } }
 
-    /// One photo → one AI request (native barcode + on-device text run in parallel as hints).
-    func analyzeLabel(_ image: UIImage) async throws -> ScanAnalysis {
+    /// One photo → at most one AI request. Native barcode/OCR run concurrently; a barcode that
+    /// resolves to a single-batch item answers the scan with no model call at all.
+    func analyzeLabel(_ image: UIImage, allowLocalFastPath: Bool = false, onStage: @escaping @MainActor (ScanStage) -> Void = { _ in }) async throws -> ScanAnalysis {
+        onStage(.preparing)
         guard let prepared = LabelImage.prepare(image) else { throw DeepSeekError.invalidResponse }
-        async let nativeBarcode = BarcodeDetector.detect(in: image)
+
         async let ocrText = OCRService.recognizeText(image: image)
-        let hint = try? await ocrText
-        let extraction = try await DeepSeekVisionService.shared.analyze(
-            jpegData: prepared.data,
-            imageHash: prepared.hash,
-            localOCRText: hint
-        )
+        let nativeBarcode = await BarcodeDetector.detect(in: image)
+
+        if allowLocalFastPath, let nativeBarcode, let item = await itemForBarcode(nativeBarcode), batches(for: item.id).count == 1 {
+            onStage(.checkingInventory)
+            return ScanAnalysis(
+                extraction: ReagentExtraction(),
+                nativeBarcode: nativeBarcode,
+                localOCRText: try? await ocrText,
+                imageHash: prepared.hash,
+                usedLocalFastPath: true
+            )
+        }
+
+        onStage(.readingLabel)
+        let extraction = try await DeepSeekVisionService.shared.analyze(jpegData: prepared.data, imageHash: prepared.hash)
+        onStage(.checkingInventory)
         return ScanAnalysis(
             extraction: extraction,
-            nativeBarcode: await nativeBarcode,
-            localOCRText: hint,
+            nativeBarcode: nativeBarcode,
+            localOCRText: try? await ocrText,
             imageHash: prepared.hash
         )
+    }
+
+    func itemForBarcode(_ barcode: String) async -> StockItem? {
+        let ids = (try? await service.itemIDs(forAliasValues: [barcode])) ?? []
+        return ids.compactMap { id in items.first(where: { $0.id == id }) }.first
     }
 
     /// Existing items that look like this scan, ranked by matching priority.
@@ -242,6 +261,68 @@ final class InventoryStore: ObservableObject {
         await refresh()
     }
 
+    // MARK: - Editing, correction and export data
+
+    func stockHistory(for itemID: UUID) -> [StockMovement] {
+        movements.filter { $0.itemId == itemID }
+    }
+
+    /// Deletion is refused when audit history or remaining stock would be destroyed.
+    func canDelete(_ item: StockItem) -> Bool {
+        !movements.contains { $0.itemId == item.id } && !batches.contains { $0.itemId == item.id && $0.currentQuantity != 0 }
+    }
+
+    func updateItem(_ item: StockItem, name: String, manufacturer: String?, referenceNumber: String?, groupID: UUID?, unitName: String, lowStockThreshold: Int, notes: String?) async throws {
+        guard let clean = name.nilIfBlank else { throw LabStockError.missingName }
+        try await service.updateItem(
+            id: item.id,
+            name: clean,
+            manufacturer: manufacturer,
+            referenceNumber: referenceNumber,
+            groupID: groupID,
+            unitName: unitName,
+            lowStockThreshold: lowStockThreshold,
+            notes: notes
+        )
+        if let reference = referenceNumber?.nilIfBlank {
+            await service.addAliases(itemID: item.id, type: .ref, values: [reference])
+        }
+        await refresh()
+    }
+
+    func deleteItem(_ item: StockItem) async throws {
+        guard canDelete(item) else { throw LabStockError.itemHasHistory }
+        try await service.deleteItem(id: item.id)
+        await refresh()
+    }
+
+    /// Returns the batch that already owns this item + LOT + expiry, if any.
+    func batchCollision(itemID: UUID, lotNumber: String?, expiryDate: Date?, excluding batchID: UUID?) -> Batch? {
+        let identity = InventoryRules.batchIdentity(lotNumber: lotNumber, expiryDate: expiryDate)
+        return batches.first { batch in
+            batch.itemId == itemID
+                && batch.id != batchID
+                && InventoryRules.batchIdentity(lotNumber: batch.lotNumber, expiryDate: batch.expiryDate) == identity
+        }
+    }
+
+    func updateBatch(_ batch: Batch, lotNumber: String?, expiryDate: Date?) async throws {
+        guard batchCollision(itemID: batch.itemId, lotNumber: lotNumber, expiryDate: expiryDate, excluding: batch.id) == nil else {
+            throw LabStockError.duplicateBatch
+        }
+        try await service.updateBatch(id: batch.id, lotNumber: lotNumber, expiryDate: expiryDate)
+        await refresh()
+    }
+
+    /// "System says 10, actual is 8" → apply_stock_delta(type: adjustment, delta: -2).
+    func adjustStock(batchID: UUID, current: Int, actualQuantity: Int, note: String?) async throws {
+        let delta = InventoryRules.adjustmentDelta(current: current, actual: actualQuantity)
+        guard InventoryRules.isValidAdjustment(delta: delta) else { throw LabStockError.noQuantityChange }
+        try await service.applyStock(batchID: batchID, delta: delta, type: .adjustment, note: note)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        await refresh()
+    }
+
     func dashboard(warningDays: Int) -> DashboardSummary {
         var summary = DashboardSummary(totalItems: items.count)
         for snapshot in snapshots {
@@ -274,6 +355,7 @@ final class InventoryStore: ObservableObject {
 
 enum LabStockError: LocalizedError {
     case invalidQuantity, cameraUnavailable, itemNotRecognized, missingName, noBatchSelected
+    case itemHasHistory, duplicateBatch, noQuantityChange
     var errorDescription: String? {
         switch self {
         case .invalidQuantity: "Enter a valid quantity that does not make stock negative."
@@ -281,6 +363,9 @@ enum LabStockError: LocalizedError {
         case .itemNotRecognized: "This code is not linked to an inventory item."
         case .missingName: "Enter a reagent name before saving."
         case .noBatchSelected: "Select a lot before continuing."
+        case .itemHasHistory: "This item has stock history. Adjust or remove its remaining stock instead — history is never deleted."
+        case .duplicateBatch: "Another batch already uses this LOT with the same expiry date."
+        case .noQuantityChange: "The actual quantity matches the current quantity."
         }
     }
 }

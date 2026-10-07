@@ -166,7 +166,7 @@ struct InventoryCountFlow: View {
         working = true
         Task {
             do {
-                let analysis = try await store.analyzeLabel(image)
+                let analysis = try await store.analyzeLabel(image, allowLocalFastPath: true)
                 let matches = await store.matches(for: analysis)
                 guard let itemID = matches.first?.item.id else {
                     message = "This item is not in the inventory yet. Add it from the Add Stock tab first."

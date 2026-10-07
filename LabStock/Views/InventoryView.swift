@@ -4,176 +4,186 @@ struct InventoryView: View {
     @EnvironmentObject private var store: InventoryStore
     @AppStorage("expiryWarningDays") private var warningDays = 30
     @State private var search = ""
+    @State private var selectedGroupID: UUID?
     @State private var showingGroups = false
+    @State private var exportReport: ExportReport?
+    @State private var showingAddItem = false
+    @State private var actionSnapshot: ItemSnapshot?
+    @State private var actionMode: ScanMode = .add
 
-    private var results: [ItemSnapshot] {
-        guard let query = search.nilIfBlank?.lowercased() else { return [] }
-        return store.snapshots.filter {
-            $0.item.name.lowercased().contains(query)
-                || ($0.item.referenceNumber?.lowercased().contains(query) ?? false)
-                || ($0.item.manufacturer?.lowercased().contains(query) ?? false)
-                || $0.batches.contains { $0.lotNumber?.lowercased().contains(query) ?? false }
+    private var snapshots: [ItemSnapshot] {
+        let query = search.nilIfBlank?.lowercased()
+        return store.snapshots.filter { snapshot in
+            guard selectedGroupID == nil || snapshot.item.groupId == selectedGroupID else { return false }
+            guard let query else { return true }
+            return snapshot.item.name.lowercased().contains(query)
+                || (snapshot.item.referenceNumber?.lowercased().contains(query) ?? false)
+                || (snapshot.item.manufacturer?.lowercased().contains(query) ?? false)
+                || snapshot.batches.contains { $0.lotNumber?.lowercased().contains(query) ?? false }
         }
     }
 
     var body: some View {
-        List {
-            if search.nilIfBlank != nil {
-                Section("Search Results") {
-                    if results.isEmpty { Text("No matching items").foregroundStyle(.secondary) }
-                    ForEach(results) { snapshot in itemLink(snapshot) }
+        VStack(spacing: 0) {
+            groupChips
+            List {
+                if snapshots.isEmpty {
+                    EmptyStateView(
+                        title: "No inventory yet",
+                        message: "Scan your first reagent or add one manually.",
+                        icon: "shippingbox",
+                        primaryTitle: "Add Manually",
+                        primaryAction: { showingAddItem = true },
+                        secondaryTitle: "Manage Groups",
+                        secondaryAction: { showingGroups = true }
+                    )
+                    .listRowBackground(Color.clear)
                 }
-            } else {
-                Section("Groups") {
-                    ForEach(store.groups) { group in
-                        NavigationLink {
-                            GroupDetailView(group: group)
-                        } label: {
-                            HStack {
-                                Label(group.name, systemImage: "folder")
-                                Spacer()
-                                Text("\(store.items.filter { $0.groupId == group.id }.count)").foregroundStyle(.secondary)
-                            }
-                        }
+                ForEach(snapshots) { snapshot in
+                    NavigationLink { ItemDetailView(snapshot: snapshot) } label: {
+                        ItemCard(snapshot: snapshot, warningDays: warningDays)
                     }
-                }
-                if !store.items.filter({ $0.groupId == nil }).isEmpty {
-                    Section("Ungrouped") {
-                        ForEach(store.snapshots.filter { $0.item.groupId == nil }) { snapshot in itemLink(snapshot) }
+                    .swipeActions(edge: .trailing) {
+                        Button { actionSnapshot = snapshot; actionMode = .add } label: { Label("Add", systemImage: "plus") }
+                            .tint(LabTheme.teal)
+                        Button { actionSnapshot = snapshot; actionMode = .withdraw } label: { Label("Withdraw", systemImage: "minus") }
+                            .tint(.red)
                     }
                 }
             }
+            .listStyle(.plain)
         }
-        .navigationTitle("Inventory")
         .searchable(text: $search, prompt: "Name, REF, maker, or lot")
-        .toolbar { Button { showingGroups = true } label: { Label("Manage", systemImage: "folder.badge.gearshape") } }
+        .navigationTitle("Inventory")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button { showingAddItem = true } label: { Label("Add Item", systemImage: "plus") }
+                    Button { showingGroups = true } label: { Label("Manage Groups", systemImage: "folder.badge.gearshape") }
+                    Menu {
+                        Button("Inventory PDF") { exportReport = .inventoryPDF }
+                        Button("Inventory CSV") { exportReport = .inventoryCSV }
+                        Button("History CSV") { exportReport = .historyCSV }
+                    } label: { Label("Export", systemImage: "square.and.arrow.up") }
+                } label: { Image(systemName: "ellipsis.circle") }
+            }
+        }
         .sheet(isPresented: $showingGroups) { NavigationStack { GroupManagerView() } }
+        .sheet(item: $exportReport) { report in ExportView(initialReport: report) }
+        .sheet(isPresented: $showingAddItem) { AddItemView(groupID: selectedGroupID) }
+        .sheet(item: $actionSnapshot) { snapshot in
+            StockOperationView(snapshot: snapshot, mode: actionMode)
+        }
         .refreshable { await store.refresh() }
     }
 
-    @ViewBuilder private func itemLink(_ snapshot: ItemSnapshot) -> some View {
-        NavigationLink { ItemDetailView(snapshot: snapshot) } label: { ItemRow(snapshot: snapshot, warningDays: warningDays) }
+    private var groupChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                FilterChip(title: "All", isSelected: selectedGroupID == nil) { selectedGroupID = nil }
+                ForEach(store.groups) { group in
+                    FilterChip(title: group.name, isSelected: selectedGroupID == group.id) { selectedGroupID = group.id }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+        .background(.bar)
     }
 }
 
-struct GroupDetailView: View {
-    @EnvironmentObject private var store: InventoryStore
-    @AppStorage("expiryWarningDays") private var warningDays = 30
-    let group: InventoryGroup
-    @State private var showingAdd = false
-
-    private var snapshots: [ItemSnapshot] { store.snapshots.filter { $0.item.groupId == group.id } }
-
-    var body: some View {
-        List {
-            if snapshots.isEmpty {
-                EmptyStateView(title: "No Items", message: "Add an item or use Scan to capture a reagent label.", icon: "shippingbox")
-            }
-            ForEach(snapshots) { snapshot in
-                NavigationLink { ItemDetailView(snapshot: snapshot) } label: { ItemRow(snapshot: snapshot, warningDays: warningDays) }
-            }
-        }
-        .navigationTitle(group.name)
-        .toolbar { Button { showingAdd = true } label: { Label("Add Item", systemImage: "plus") } }
-        .sheet(isPresented: $showingAdd) { AddItemView(groupID: group.id) }
-    }
-}
-
-struct ItemDetailView: View {
-    @EnvironmentObject private var store: InventoryStore
-    @AppStorage("expiryWarningDays") private var warningDays = 30
-    let snapshot: ItemSnapshot
-    @State private var operation: ScanMode?
-
-    private var current: ItemSnapshot {
-        store.snapshots.first(where: { $0.id == snapshot.id }) ?? snapshot
-    }
-
-    var body: some View {
-        List {
-            Section {
-                LabeledContent("Total", value: "\(current.totalQuantity) \(current.item.unitName)\(current.totalQuantity == 1 ? "" : "s")")
-                if let ref = current.item.referenceNumber { LabeledContent("REF", value: ref) }
-                if let maker = current.item.manufacturer { LabeledContent("Manufacturer", value: maker) }
-                LabeledContent("Low stock at", value: "\(current.item.lowStockThreshold)")
-            }
-            Section("Batches") {
-                if current.batches.isEmpty { Text("No batches yet.").foregroundStyle(.secondary) }
-                ForEach(current.batches) { batch in BatchRow(batch: batch, warningDays: warningDays) }
-            }
-            Section("Recent History") {
-                let history = store.movements.filter { $0.itemId == current.id }.prefix(20)
-                if history.isEmpty { Text("No movements yet.").foregroundStyle(.secondary) }
-                ForEach(history) { MovementRow(movement: $0) }
-            }
-        }
-        .navigationTitle(current.item.name)
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Button { operation = .add } label: { Label("Add Stock", systemImage: "plus.circle.fill").frame(maxWidth: .infinity) }
-                Button { operation = .withdraw } label: { Label("Withdraw", systemImage: "minus.circle.fill").frame(maxWidth: .infinity) }
-            }.buttonStyle(.borderedProminent).padding().background(.bar)
-        }
-        .sheet(item: $operation) { mode in StockOperationView(snapshot: current, mode: mode) }
-    }
-}
-
-struct ItemRow: View {
+struct ItemCard: View {
     let snapshot: ItemSnapshot
     let warningDays: Int
-    private var status: ExpiryStatus { InventoryRules.expiryStatus(for: snapshot.nearestExpiry, warningDays: warningDays) }
+
+    private var status: ExportStatus { snapshot.status(warningDays: warningDays) }
+
     var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(snapshot.item.name).font(.headline)
-                HStack {
-                    Text("Qty \(snapshot.totalQuantity)")
-                    if let date = snapshot.nearestExpiry { Text("• \(date, format: .dateTime.year().month().day())") }
-                }.font(.caption).foregroundStyle(.secondary)
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LabTheme.cyan.opacity(0.15))
+                Image(systemName: "testtube.2")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(LabTheme.cyan)
             }
-            Spacer()
-            if snapshot.totalQuantity <= snapshot.item.lowStockThreshold { StatusDot(color: .orange, label: "Low") }
-            if status == .expired { StatusDot(color: .red, label: "Expired") }
-            else if status == .expiringSoon { StatusDot(color: .yellow, label: "Soon") }
-        }
-    }
-}
+            .frame(width: 42, height: 42)
 
-private struct StatusDot: View {
-    let color: Color; let label: String
-    var body: some View { Circle().fill(color).frame(width: 10, height: 10).accessibilityLabel(label) }
-}
-
-private struct BatchRow: View {
-    let batch: Batch; let warningDays: Int
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading) {
-                Text(batch.lotNumber.map { "LOT \($0)" } ?? "No lot")
-                Text(batch.expiryDate.map { "Expires \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "No expiry")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(); Text("\(batch.currentQuantity)").font(.title3.monospacedDigit())
-        }
-    }
-}
-
-struct MovementRow: View {
-    @EnvironmentObject private var store: InventoryStore
-    let movement: StockMovement
-    private var itemName: String { store.items.first(where: { $0.id == movement.itemId })?.name ?? "Unknown item" }
-    private var lot: String? { movement.lotNumberSnapshot ?? movement.batchId.flatMap { id in store.batches.first(where: { $0.id == id })?.lotNumber } }
-    private var userName: String { store.displayName(for: movement.userId) }
-    var body: some View {
-        HStack {
             VStack(alignment: .leading, spacing: 3) {
-                Text(itemName).font(.subheadline.weight(.medium))
-                Text([movement.type.label, lot.map { "LOT \($0)" }, userName, movement.createdAt.formatted(date: .abbreviated, time: .shortened)].compactMap { $0 }.joined(separator: " • "))
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(snapshot.item.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if let maker = snapshot.item.manufacturer { Text(maker).lineLimit(1) }
+                    if let ref = snapshot.item.referenceNumber { Text("REF \(ref)") }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text("Qty \(snapshot.totalQuantity)")
+                        .font(.subheadline.weight(.semibold))
+                    if let expiry = snapshot.nearestExpiry {
+                        Text("• \(expiry.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
-            Spacer()
-            Text(movement.quantityDelta > 0 ? "+\(movement.quantityDelta)" : "\(movement.quantityDelta)")
-                .font(.headline.monospacedDigit()).foregroundStyle(movement.quantityDelta >= 0 ? .green : .red)
+            Spacer(minLength: 8)
+            StatusBadge(text: status.rawValue, color: status.color)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct AddItemView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: InventoryStore
+    let groupID: UUID?
+    @State private var name = ""
+    @State private var manufacturer = ""
+    @State private var reference = ""
+    @State private var unitName = "unit"
+    @State private var lowStockThreshold = 1
+    @State private var saving = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Reagent") {
+                    TextField("Item name", text: $name)
+                    TextField("Manufacturer", text: $manufacturer)
+                    TextField("REF / Catalog No.", text: $reference).textInputAutocapitalization(.characters)
+                }
+                Section("Stock rules") {
+                    TextField("Unit", text: $unitName)
+                    Stepper("Low stock at \(lowStockThreshold)", value: $lowStockThreshold, in: 0...999)
+                }
+            }
+            .navigationTitle("Add Item")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saving = true
+                        Task {
+                            do {
+                                try await store.createItem(
+                                    name: name,
+                                    groupID: groupID,
+                                    manufacturer: manufacturer,
+                                    referenceNumber: reference,
+                                    unitName: unitName,
+                                    lowStockThreshold: lowStockThreshold
+                                )
+                                dismiss()
+                            } catch { store.errorMessage = error.localizedDescription }
+                            saving = false
+                        }
+                    }
+                    .disabled(name.nilIfBlank == nil || saving)
+                }
+            }
         }
     }
 }
@@ -196,10 +206,13 @@ struct GroupManagerView: View {
                             catch { store.errorMessage = error.localizedDescription }
                         }
                     }
-                        .disabled(newName.nilIfBlank == nil)
+                    .disabled(newName.nilIfBlank == nil)
                 }
             }
             Section("Groups") {
+                if store.groups.isEmpty {
+                    Text("No groups yet.").foregroundStyle(.secondary)
+                }
                 ForEach(store.groups) { group in
                     Text(group.name).swipeActions {
                         Button(role: .destructive) {
@@ -208,7 +221,7 @@ struct GroupManagerView: View {
                                 catch { store.errorMessage = error.localizedDescription }
                             }
                         } label: { Label("Delete", systemImage: "trash") }
-                        Button { editing = group; editName = group.name } label: { Label("Rename", systemImage: "pencil") }.tint(.blue)
+                        Button { editing = group; editName = group.name } label: { Label("Rename", systemImage: "pencil") }.tint(LabTheme.cyan)
                     }
                 }
             }
@@ -227,43 +240,5 @@ struct GroupManagerView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-    }
-}
-
-private struct AddItemView: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var store: InventoryStore
-    let groupID: UUID?
-    @State private var name = ""
-    @State private var saving = false
-    var body: some View {
-        NavigationStack {
-            Form { TextField("Item name", text: $name) }
-                .navigationTitle("Add Item")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            saving = true
-                            Task {
-                                do { try await store.createItem(name: name, groupID: groupID); dismiss() }
-                                catch { store.errorMessage = error.localizedDescription }
-                                saving = false
-                            }
-                        }.disabled(name.nilIfBlank == nil || saving)
-                    }
-                }
-        }
-    }
-}
-
-struct EmptyStateView: View {
-    let title: String; let message: String; let icon: String
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: icon).font(.largeTitle).foregroundStyle(.secondary)
-            Text(title).font(.headline)
-            Text(message).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        }.frame(maxWidth: .infinity).padding(.vertical, 32)
     }
 }

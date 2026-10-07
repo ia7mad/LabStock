@@ -144,6 +144,9 @@ create policy items_delete on public.items for delete to authenticated using (tr
 
 create policy batches_read on public.batches for select to authenticated using (true);
 create policy batches_insert on public.batches for insert to authenticated with check ((select auth.uid()) = created_by);
+-- LOT / expiry corrections only: quantity changes always go through apply_stock_delta.
+create policy batches_update_lot_expiry on public.batches for update to authenticated
+  using (true) with check (true);
 
 create policy aliases_read on public.scan_aliases for select to authenticated using (true);
 create policy aliases_insert on public.scan_aliases for insert to authenticated with check ((select auth.uid()) = created_by);
@@ -291,6 +294,7 @@ grant update on public.groups to authenticated;
 grant select, insert, delete on public.items to authenticated;
 grant update on public.items to authenticated;
 grant select, insert on public.batches to authenticated;
+grant update (lot_number, expiry_date) on public.batches to authenticated;
 grant select, insert on public.scan_aliases to authenticated;
 grant select on public.stock_movements to authenticated;
 grant select, insert on public.inventory_sessions to authenticated;

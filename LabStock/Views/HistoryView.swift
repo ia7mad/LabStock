@@ -8,10 +8,11 @@ struct HistoryView: View {
     @State private var userID: UUID?
     @State private var dateRange = HistoryDateRange.all
     @State private var showingFilters = false
+    @State private var exportReport: ExportReport?
 
     private var filtered: [StockMovement] {
         store.movements.filter { movement in
-            let item = store.items.first(where: { $0.id == movement.itemId })
+            let item = store.item(withID: movement.itemId)
             let groupMatches = groupID == nil || item?.groupId == groupID
             let itemMatches = itemID == nil || movement.itemId == itemID
             let typeMatches = movementType == nil || movement.type == movementType
@@ -23,11 +24,22 @@ struct HistoryView: View {
 
     var body: some View {
         List {
-            if filtered.isEmpty { EmptyStateView(title: "No Movements", message: "Stock activity will appear here.", icon: "clock") }
+            if filtered.isEmpty {
+                EmptyStateView(title: "No movements", message: "Stock activity will appear here as you scan and adjust.", icon: "clock")
+                    .listRowBackground(Color.clear)
+            }
             ForEach(filtered) { MovementRow(movement: $0) }
         }
+        .listStyle(.plain)
         .navigationTitle("History")
-        .toolbar { Button { showingFilters = true } label: { Label("Filters", systemImage: "line.3.horizontal.decrease.circle") } }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button { showingFilters = true } label: { Label("Filters", systemImage: "line.3.horizontal.decrease.circle") }
+                    Button { exportReport = .historyCSV } label: { Label("Export History CSV", systemImage: "square.and.arrow.up") }
+                } label: { Image(systemName: "ellipsis.circle") }
+            }
+        }
         .sheet(isPresented: $showingFilters) {
             NavigationStack {
                 Form {
@@ -53,12 +65,51 @@ struct HistoryView: View {
                 }
                 .navigationTitle("History Filters")
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Reset") { groupID = nil; itemID = nil; movementType = nil; userID = nil; dateRange = .all } }
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Reset") { groupID = nil; itemID = nil; movementType = nil; userID = nil; dateRange = .all }
+                    }
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { showingFilters = false } }
                 }
             }
         }
+        .sheet(item: $exportReport) { report in ExportView(initialReport: report) }
         .refreshable { await store.refresh() }
+    }
+}
+
+struct MovementRow: View {
+    @EnvironmentObject private var store: InventoryStore
+    let movement: StockMovement
+
+    private var itemName: String { store.item(withID: movement.itemId)?.name ?? "Unknown item" }
+
+    private var detail: String {
+        [
+            movement.lotNumberSnapshot.map { "LOT \($0)" },
+            store.displayName(for: movement.userId),
+            movement.createdAt.formatted(date: .abbreviated, time: .shortened)
+        ]
+        .compactMap { $0 }
+        .joined(separator: " • ")
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(itemName).font(.subheadline.weight(.medium))
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(movement.quantityDelta > 0 ? "+\(movement.quantityDelta)" : "\(movement.quantityDelta)")
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(movement.type.color)
+                Text(movement.type.label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 6)
     }
 }
 

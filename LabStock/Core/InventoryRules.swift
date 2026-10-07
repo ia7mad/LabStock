@@ -31,6 +31,19 @@ enum InventoryRules {
     }
 
     static func difference(expected: Int, counted: Int) -> Int { counted - expected }
+
+    /// Correction delta for "system says 10, actual is 8" → -2.
+    static func adjustmentDelta(current: Int, actual: Int) -> Int { actual - current }
+
+    static func isValidAdjustment(delta: Int) -> Bool { delta != 0 }
+
+    /// Duplicate-batch guard: item + LOT + expiry must stay unique.
+    static func batchIdentity(lotNumber: String?, expiryDate: Date?, calendar: Calendar = .current) -> String {
+        let lot = ItemMatcher.lot(lotNumber) ?? ""
+        guard let expiryDate else { return "\(lot)|none" }
+        let parts = calendar.dateComponents([.year, .month, .day], from: expiryDate)
+        return "\(lot)|\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)"
+    }
 }
 
 extension String {

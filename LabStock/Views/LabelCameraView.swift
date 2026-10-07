@@ -33,17 +33,51 @@ struct LabelCameraView: View {
     }
 
     private var frameGuide: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
             Text("Fill the frame with the label")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(.black.opacity(0.45), in: Capsule())
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(.white.opacity(0.85), lineWidth: 3)
-                .frame(width: 280, height: 380)
+            ZStack {
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .stroke(.white.opacity(0.18), lineWidth: 1)
+                CornerMarks()
+                    .stroke(LabTheme.cyan, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+            }
+            .frame(width: 280, height: 380)
         }
         .allowsHitTesting(false)
+    }
+
+    /// Subtle framing corners instead of a full box.
+    private struct CornerMarks: Shape {
+        func path(in rect: CGRect) -> Path {
+            let length: CGFloat = 34
+            let radius: CGFloat = 22
+            var path = Path()
+            // top-left
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY + radius + length))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+            path.addQuadCurve(to: CGPoint(x: rect.minX + radius, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.minX + radius + length, y: rect.minY))
+            // top-right
+            path.move(to: CGPoint(x: rect.maxX - radius - length, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + radius), control: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + radius + length))
+            // bottom-right
+            path.move(to: CGPoint(x: rect.maxX, y: rect.maxY - radius - length))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX - radius, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.maxX - radius - length, y: rect.maxY))
+            // bottom-left
+            path.move(to: CGPoint(x: rect.minX + radius + length, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+            path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - radius), control: CGPoint(x: rect.minX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius - length))
+            return path
+        }
     }
 
     private var topBar: some View {

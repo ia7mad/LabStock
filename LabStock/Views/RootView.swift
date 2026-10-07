@@ -17,6 +17,7 @@ struct RootView: View {
                 MainTabView()
             }
         }
+        .tint(LabTheme.cyan)
         .alert("LabStock", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
@@ -43,7 +44,7 @@ private struct MainTabView: View {
             NavigationStack { InventoryView() }
                 .tabItem { Label("Inventory", systemImage: "shippingbox.fill") }
             NavigationStack { ScanView() }
-                .tabItem { Label("Scan", systemImage: "barcode.viewfinder") }
+                .tabItem { Label("Scan", systemImage: "viewfinder") }
             NavigationStack { HistoryView() }
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
             NavigationStack { SettingsView() }

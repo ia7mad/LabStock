@@ -33,5 +33,8 @@ enum AppConfig {
 
     static var deepSeekBaseURL: URL { URL(string: "https://api.deepseek.com")! }
 
+    /// Small LOT/EXP/REF text needs full-resolution analysis.
+    static let deepSeekImageDetail = "original"
+
     static var isDeepSeekConfigured: Bool { deepSeekAPIKey != nil }
 }

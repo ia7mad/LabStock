@@ -5,8 +5,7 @@ import Foundation
 enum ItemMatcher {
     static func normalize(_ value: String?) -> String? {
         guard let value else { return nil }
-        let scalars = value.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
-        let result = String(String.UnicodeScalarView(scalars))
+        let result = compact(value)
         return result.isEmpty ? nil : result
     }
 
@@ -14,17 +13,33 @@ enum ItemMatcher {
     /// so "REF 66319" matches a stored "66319".
     static func identifier(_ value: String?) -> String? {
         guard var text = value?.lowercased() else { return nil }
-        for prefix in ["catalog", "material", "reference", "ref", "cat", "number", "num", "no"] {
-            if text.hasPrefix(prefix) { text = String(text.dropFirst(prefix.count)) }
+        for keyword in ["catalog", "material", "reference", "ref", "cat", "number", "num", "no"] where text.hasPrefix(keyword) {
+            let rest = String(text.dropFirst(keyword.count))
+            if rest.isEmpty || !(rest.first?.isLetter ?? false) {
+                text = rest
+                break
+            }
         }
-        return normalize(text)
+        let result = compact(text)
+        return result.isEmpty ? nil : result
     }
 
     static func lot(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let scalars = value.uppercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
-        let result = String(String.UnicodeScalarView(scalars))
+        guard var text = value?.lowercased() else { return nil }
+        for keyword in ["batch", "lot"] where text.hasPrefix(keyword) {
+            let rest = String(text.dropFirst(keyword.count))
+            if rest.isEmpty || !(rest.first?.isLetter ?? false) {
+                text = rest
+                break
+            }
+        }
+        let result = compact(text).uppercased()
         return result.isEmpty ? nil : result
+    }
+
+    private static func compact(_ value: String) -> String {
+        let scalars = value.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+        return String(String.UnicodeScalarView(scalars))
     }
 
     /// Ranked, de-duplicated matches. Lowest `priority` wins per item.

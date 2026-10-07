@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build, test, and package
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Select newest installed Xcode
+        run: |
+          set -euo pipefail
+          LATEST=$(for app in /Applications/Xcode*.app; do
+            version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/version.plist" 2>/dev/null || echo 0)
+            echo "$version|$app"
+          done | sort -t'|' -k1,1V | tail -n 1 | cut -d'|' -f2)
+          test -n "$LATEST"
+          echo "Selected: $LATEST"
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -list -project LabStock.xcodeproj
+
+      - name: Resolve an available iPhone simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available \
+            | sed -n 's/^ *iPhone[^(]*(\([0-9A-Fa-f-]\{36\}\)).*/\1/p' \
+            | tail -n 1)
+          test -n "$UDID"
+          echo "Using simulator UDID: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Build for generic iOS device (no signing)
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild \
+            -project LabStock.xcodeproj \
+            -scheme LabStock \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/dd-device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build/build-device.log
+
+      - name: Package LabStock.ipa
+        run: |
+          set -euo pipefail
+          APP="build/dd-device/Build/Products/Release-iphoneos/LabStock.app"
+          test -d "$APP"
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$APP" build/ipa/Payload/
+          (cd build/ipa && zip -qry ../../LabStock.ipa Payload)
+          ls -lh LabStock.ipa
+
+      - name: Upload LabStock.ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: LabStock-ipa
+          path: LabStock.ipa
+          if-no-files-found: error
+
+      - name: Run XCTest on iPhone Simulator
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild \
+            -project LabStock.xcodeproj \
+            -scheme LabStock \
+            -configuration Debug \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build/dd-test \
+            -resultBundlePath build/TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            test 2>&1 | tee build/test.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs
+          path: |
+            build/*.log
+            build/*.xcresult
+          if-no-files-found: ignore
